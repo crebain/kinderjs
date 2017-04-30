@@ -9,10 +9,11 @@ program
 //   .option('-i, --input [optional]','optional user input')
   .option('-u, --email <required>','kindervibe user email')
   .option('-p, --password <required>','kindervibe user password')
+  .option('-c, --child [name]','child name to fetch photos for; defaults to the first child in the system (which is not the same as your first child)')
   .option('-o, --outdir [optional]', 'directory to put downloaded photos. If not specified, current directory is used.')
   .parse(process.argv); // end with parse to parse through the input
 
-var r = require('request-promise-native');
+var r = require('request-promise');
 var request = r.defaults({
     baseUrl: "http://kindervibe.com/api/",
     headers: {
@@ -49,11 +50,10 @@ function listChildren (token) {
 }
 
 function listPhotos (token, child_id) {
-    var auth = authRequest(token)
-        .defaults ({ baseUrl: null });
-    return auth.get ("http://kindervibe.com/api/photos/child/?child_pk=" + child_id)
+    var auth = authRequest(token);
+    return auth.get ("/photos/child/?child_pk=" + child_id)
         .then (r =>
-            getPhotos (auth, r));
+            getPhotos (auth.defaults ({ baseUrl: null }), r));
 }
 
 function getPhotos (client, response) {
@@ -74,16 +74,36 @@ function getPhotos (client, response) {
     return photos;
 }
 
+const Promise = require('bluebird');
+const fs = Promise.promisifyAll(require('fs'));
+
 function run (token) {
     var promise = listChildren (token)
-        .then (c =>
-            listPhotos (token, c[1].id));
+        .then (c => {
+            var child = 0;
+            if (program.child) {
+                child = c.findIndex (e =>
+                    e.first_name.trim() == program.child);
+                if (-1 === child) {
+                    console.error ("A child with name " + program.child + " was not found. Do you really know your kid's name?");
+                    process.exit(1);
+                }
+            }
+
+            console.log ("Downloading photos of " + c[child].first_name);
+
+            return listPhotos (token, c[child].id);
+        });
     if (program.outdir) {
         promise = promise
-            .then (r => {
-                return fs.mkdir (program.outdir)
-                    .then (_ => r);
-            })
+            .then (r =>
+                fs.mkdirAsync (program.outdir)
+                    .then (_ => r)
+                    .catch (err => {
+                        if (err.code != 'EEXIST')
+                            throw err;
+                        return r;
+                    }));
     }
 
     promise
@@ -91,8 +111,6 @@ function run (token) {
             writeFiles (r.results));
 }
 
-const promisify = require('promisify-node');
-const fs = promisify('fs');
 const async = require("async");
 const path = require('path');
 function writeFiles (results) {
